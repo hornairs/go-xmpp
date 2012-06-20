@@ -35,6 +35,7 @@ const (
 	nsSASL   = "urn:ietf:params:xml:ns:xmpp-sasl"
 	nsBind   = "urn:ietf:params:xml:ns:xmpp-bind"
 	nsClient = "jabber:client"
+	nsRoster = "jabber:roster"
 )
 
 var DefaultConfig tls.Config
@@ -43,6 +44,7 @@ type Client struct {
 	tls *tls.Conn // connection to server
 	jid string    // Jabber ID for our connection
 	p   *xml.Decoder
+  Roster []string
 }
 
 // NewClient creates a new connection to a host given as "hostname" or "hostname:port".
@@ -119,8 +121,8 @@ func (c *Client) Close() error {
 
 func (c *Client) init(user, passwd string) error {
 	// For debugging: the following causes the plaintext of the connection to be duplicated to stdout.
-	//c.p = xml.NewDecoder(tee{c.tls, os.Stdout})
-	c.p = xml.NewDecoder(c.tls)
+	c.p = xml.NewDecoder(tee{c.tls, os.Stdout})
+	/*c.p = xml.NewDecoder(c.tls)*/
 
 	a := strings.SplitN(user, "@", 2)
 	if len(a) != 2 {
@@ -210,6 +212,21 @@ func (c *Client) init(user, passwd string) error {
 		return errors.New("<iq> result missing <bind>")
 	}
 	c.jid = iq.Bind.Jid // our local id
+
+  // Send IQ message asking for the roster
+  fmt.Fprintf(c.tls, "<iq type='get' id='roster_1'><query xmlns='jabber:iq:roster'/></iq>\n")
+  var rosteriq rosterIQ
+	if err = c.p.DecodeElement(&rosteriq, nil); err != nil {
+		return errors.New("unmarshal <iq>: " + err.Error())
+	}
+	if &rosteriq.Query == nil {
+		return errors.New("<iq> result missing <query>")
+	}
+  c.Roster = make([]string, len(rosteriq.Query.Items))
+
+  for index, item := range rosteriq.Query.Items {
+    c.Roster[index] = item.Jid
+  }
 
 	// We're connected and can now receive and send messages.
 	fmt.Fprintf(c.tls, "<presence xml:lang='en'><show>xa</show><status>I for one welcome our new codebot overlords.</status></presence>")
@@ -362,6 +379,22 @@ type clientError struct {
 	Type    string   `xml:",attr"`
 	Any     xml.Name
 	Text    string
+}
+
+// RFC 6121
+type rosterIQ struct {
+	XMLName xml.Name `xml:"jabber:client iq"`
+  Query rosterQuery
+}
+
+type rosterQuery struct {
+  XMLName xml.Name `xml:"jabber:iq:roster query"`
+  Items []rosterQueryItem `xml:"jabber:iq:roster item"`
+}
+
+type rosterQueryItem struct {
+  XMLName xml.Name `xml:"jabber:iq:roster item"`
+  Jid      string `xml:"jid,attr"`
 }
 
 // Scan XML token stream to find next StartElement.
